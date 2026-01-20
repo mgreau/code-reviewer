@@ -29,9 +29,12 @@ var ReviewPrompt = promptbuilder.MustNewPrompt(`You are an expert code reviewer.
    - Security vulnerabilities
 
 2. For each issue found, provide:
-   - File path and line numbers
-   - Clear explanation of the problem
-   - Concrete suggestion with code
+   - File path and line numbers (line_start and line_end must exactly match the lines you want to replace)
+   - Clear explanation of the problem in the "message" field
+   - In the "suggestion" field: provide ONLY the raw replacement code that should replace lines line_start to line_end
+     - NO markdown formatting, NO code fences, NO descriptions
+     - Just the literal code that should be inserted
+     - The suggestion must be a valid direct replacement for the specified lines
 
 3. Be constructive and specific. Only flag real issues that matter.
    - Focus on bugs, security issues, and logic errors first
@@ -43,7 +46,23 @@ var ReviewPrompt = promptbuilder.MustNewPrompt(`You are an expert code reviewer.
 5. When finished, submit your review using the submit_result tool with:
    - A summary of your findings
    - A list of suggestions with file, line numbers, severity, message, and suggested fix
-   - Whether the PR is approved (no errors found)`)
+   - Whether the PR is approved (no errors found)
+
+## Example Suggestion Format
+If you want to suggest replacing:
+  line 10: "x := foo()"
+  line 11: "y := bar(x)"
+With:
+  "result, err := fooBar()"
+  "if err != nil { return err }"
+
+Then set:
+- line_start: 10
+- line_end: 11
+- message: "Combine foo and bar calls and add error handling"
+- suggestion: "result, err := fooBar()\nif err != nil { return err }"
+
+Note: The suggestion field contains ONLY the replacement code with \n for newlines.`)
 
 // PRInfo contains the PR metadata for XML binding.
 type PRInfo struct {

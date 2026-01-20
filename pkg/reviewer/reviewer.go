@@ -332,11 +332,60 @@ func (r *Reviewer) PostReview(ctx context.Context, owner, repo string, prNumber 
 	return nil
 }
 
+// extractCodeFromSuggestion extracts raw code from a suggestion that may contain markdown.
+// If the suggestion contains markdown code fences (```), it extracts only the code.
+// Otherwise, returns the suggestion as-is.
+func extractCodeFromSuggestion(suggestion string) string {
+	// Look for code fences
+	if !strings.Contains(suggestion, "```") {
+		return suggestion
+	}
+
+	// Find all code blocks and extract the last one (most likely the actual suggestion)
+	lines := strings.Split(suggestion, "\n")
+	var inCodeBlock bool
+	var codeLines []string
+	var currentBlock []string
+
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "```") {
+			if inCodeBlock {
+				// End of code block - save it
+				if len(currentBlock) > 0 {
+					codeLines = currentBlock
+				}
+				currentBlock = nil
+				inCodeBlock = false
+			} else {
+				// Start of code block
+				inCodeBlock = true
+				currentBlock = nil
+			}
+			continue
+		}
+
+		if inCodeBlock {
+			currentBlock = append(currentBlock, line)
+		}
+	}
+
+	// If we found code blocks, use the extracted code
+	if len(codeLines) > 0 {
+		return strings.Join(codeLines, "\n")
+	}
+
+	// No valid code blocks found, return original
+	return suggestion
+}
+
 // buildReviewComment creates a GitHub review comment from a suggestion.
 func buildReviewComment(s CodeSuggestion, diffInfo *diffLines) *gh.DraftReviewComment {
 	body := fmt.Sprintf("**%s**: %s", s.NormalizedSeverity(), s.Message)
 	if s.Suggestion != "" {
-		body += fmt.Sprintf("\n\n```suggestion\n%s\n```", s.Suggestion)
+		// Extract raw code from suggestion (in case AI returned markdown)
+		code := extractCodeFromSuggestion(s.Suggestion)
+		body += fmt.Sprintf("\n\n```suggestion\n%s\n```", code)
 	}
 
 	comment := &gh.DraftReviewComment{

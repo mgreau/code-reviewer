@@ -38,7 +38,7 @@ type CodeSuggestion struct {
 	LineEnd    int    `json:"line_end" jsonschema:"description=Ending line number of the issue"`
 	Severity   string `json:"severity" jsonschema:"description=Severity level: error, warning, or info"`
 	Message    string `json:"message" jsonschema:"description=Clear explanation of the issue found"`
-	Suggestion string `json:"suggestion" jsonschema:"description=Suggested code fix or improvement"`
+	Suggestion string `json:"suggestion" jsonschema:"description=Raw replacement code only (no markdown or descriptions). This exact text will replace lines line_start to line_end."`
 }
 
 // IsError returns true if this suggestion has error severity.
