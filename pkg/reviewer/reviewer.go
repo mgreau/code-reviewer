@@ -245,42 +245,36 @@ func (r *Reviewer) PostReview(ctx context.Context, owner, repo string, prNumber 
 		return fmt.Errorf("GitHub client not set")
 	}
 
-	// Build review comments from suggestions
-	var comments []*gh.DraftReviewComment
-	for _, s := range result.Suggestions {
-		body := fmt.Sprintf("**%s**: %s", strings.ToUpper(s.Severity), s.Message)
-		if s.Suggestion != "" {
-			body += fmt.Sprintf("\n\n```suggestion\n%s\n```", s.Suggestion)
-		}
+	// Build the review body with inline suggestions as markdown
+	var body strings.Builder
+	body.WriteString(result.Summary)
 
-		comment := &gh.DraftReviewComment{
-			Path: ghclient.Ptr(s.File),
-			Body: ghclient.Ptr(body),
-			Line: ghclient.Ptr(s.LineEnd),
+	if len(result.Suggestions) > 0 {
+		body.WriteString("\n\n---\n\n## Suggestions\n\n")
+		for i, s := range result.Suggestions {
+			body.WriteString(fmt.Sprintf("### %d. `%s` (lines %d-%d) - %s\n\n",
+				i+1, s.File, s.LineStart, s.LineEnd, strings.ToUpper(s.Severity)))
+			body.WriteString(s.Message)
+			if s.Suggestion != "" {
+				body.WriteString(fmt.Sprintf("\n\n```suggestion\n%s\n```", s.Suggestion))
+			}
+			body.WriteString("\n\n")
 		}
-
-		// Only set StartLine if it differs from Line (multi-line comment)
-		if s.LineStart != s.LineEnd && s.LineStart > 0 {
-			comment.StartLine = ghclient.Ptr(s.LineStart)
-		}
-
-		comments = append(comments, comment)
 	}
 
 	// Determine review event
+	// Note: REQUEST_CHANGES doesn't work on your own PRs, so we use COMMENT for non-approved reviews
 	event := "COMMENT"
 	if result.Approved {
 		event = "APPROVE"
-	} else if hasErrors(result.Suggestions) {
-		event = "REQUEST_CHANGES"
 	}
 
-	// Submit review
+	// Submit review without inline comments (they require exact diff line matching)
+	// Instead, include all suggestions in the review body
 	review := &gh.PullRequestReviewRequest{
 		CommitID: ghclient.Ptr(commitSHA),
-		Body:     ghclient.Ptr(result.Summary),
+		Body:     ghclient.Ptr(body.String()),
 		Event:    ghclient.Ptr(event),
-		Comments: comments,
 	}
 
 	_, err := r.github.CreateReview(ctx, owner, repo, prNumber, review)
