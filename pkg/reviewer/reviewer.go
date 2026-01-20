@@ -8,6 +8,7 @@ package reviewer
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"strings"
 
 	"chainguard.dev/driftless/pkg/evals"
@@ -95,28 +96,33 @@ func (r *Reviewer) SetGitHub(client *ghclient.Client) {
 }
 
 // Review performs a code review on the specified PR.
-func (r *Reviewer) Review(ctx context.Context, owner, repo string, prNumber int) (*ReviewResult, error) {
+// Returns a ReviewOutput containing the result, commit SHA, and cached diff for posting.
+func (r *Reviewer) Review(ctx context.Context, owner, repo string, prNumber int) (*ReviewOutput, error) {
+	log := slog.With("owner", owner, "repo", repo, "pr", prNumber, "provider", r.provider)
+
 	if r.github == nil {
 		return nil, fmt.Errorf("GitHub client not set")
 	}
 
-	// Fetch PR metadata
+	log.Info("fetching PR metadata")
 	pr, err := r.github.GetPR(ctx, owner, repo, prNumber)
 	if err != nil {
-		return nil, fmt.Errorf("get PR: %w", err)
+		return nil, fmt.Errorf("fetch PR %s/%s#%d metadata: %w", owner, repo, prNumber, err)
 	}
 
-	// Fetch PR diff
+	log.Info("fetching PR diff")
 	diff, err := r.github.GetPRDiff(ctx, owner, repo, prNumber)
 	if err != nil {
-		return nil, fmt.Errorf("get PR diff: %w", err)
+		return nil, fmt.Errorf("fetch PR %s/%s#%d diff: %w", owner, repo, prNumber, err)
 	}
 
-	// Fetch changed files
+	log.Info("fetching changed files")
 	files, err := r.github.GetPRFiles(ctx, owner, repo, prNumber)
 	if err != nil {
-		return nil, fmt.Errorf("get PR files: %w", err)
+		return nil, fmt.Errorf("fetch PR %s/%s#%d files: %w", owner, repo, prNumber, err)
 	}
+
+	log.Info("starting AI review", "files_count", len(files), "diff_size", len(diff))
 
 	// Build the request
 	request := &ReviewRequest{
@@ -130,14 +136,27 @@ func (r *Reviewer) Review(ctx context.Context, owner, repo string, prNumber int)
 	sha := pr.GetHead().GetSHA()
 
 	// Execute with the appropriate provider
+	var result *ReviewResult
 	switch r.provider {
 	case "claude":
-		return r.reviewWithClaude(ctx, request, owner, repo, sha)
+		result, err = r.reviewWithClaude(ctx, request, owner, repo, sha)
 	case "gemini":
-		return r.reviewWithGemini(ctx, request, owner, repo, sha)
+		result, err = r.reviewWithGemini(ctx, request, owner, repo, sha)
 	default:
 		return nil, fmt.Errorf("unknown provider: %s", r.provider)
 	}
+
+	if err != nil {
+		return nil, err
+	}
+
+	log.Info("review completed", "suggestions", len(result.Suggestions), "approved", result.Approved)
+
+	return &ReviewOutput{
+		Result:    result,
+		CommitSHA: sha,
+		Diff:      diff,
+	}, nil
 }
 
 func (r *Reviewer) reviewWithClaude(ctx context.Context, request *ReviewRequest, owner, repo, sha string) (*ReviewResult, error) {
@@ -240,19 +259,18 @@ func (r *Reviewer) geminiReadFileTool(owner, repo, sha string) googleexecutor.To
 }
 
 // PostReview submits the review to GitHub with inline comments.
-func (r *Reviewer) PostReview(ctx context.Context, owner, repo string, prNumber int, result *ReviewResult, commitSHA string) error {
+// Uses the cached diff from ReviewOutput to avoid re-fetching.
+func (r *Reviewer) PostReview(ctx context.Context, owner, repo string, prNumber int, output *ReviewOutput) error {
+	log := slog.With("owner", owner, "repo", repo, "pr", prNumber)
+
 	if r.github == nil {
 		return fmt.Errorf("GitHub client not set")
 	}
 
-	// Get the diff to determine valid line numbers
-	diff, err := r.github.GetPRDiff(ctx, owner, repo, prNumber)
-	if err != nil {
-		return fmt.Errorf("get diff for line validation: %w", err)
-	}
+	// Parse cached diff to get valid line ranges per file
+	diffInfo := newDiffLines(output.Diff)
 
-	// Parse diff to get valid line ranges per file
-	validLines := parseDiffLines(diff)
+	result := output.Result
 
 	// Build inline comments for suggestions with valid line numbers
 	var comments []*gh.DraftReviewComment
@@ -260,30 +278,10 @@ func (r *Reviewer) PostReview(ctx context.Context, owner, repo string, prNumber 
 
 	for _, s := range result.Suggestions {
 		// Check if the line is in the diff
-		if isLineInDiff(validLines, s.File, s.LineEnd) {
-			body := fmt.Sprintf("**%s**: %s", strings.ToUpper(s.Severity), s.Message)
-			if s.Suggestion != "" {
-				body += fmt.Sprintf("\n\n```suggestion\n%s\n```", s.Suggestion)
-			}
-
-			comment := &gh.DraftReviewComment{
-				Path: ghclient.Ptr(s.File),
-				Body: ghclient.Ptr(body),
-				Line: ghclient.Ptr(s.LineEnd),
-				Side: ghclient.Ptr("RIGHT"), // Comment on the new version
-			}
-
-			// Multi-line comment
-			if s.LineStart != s.LineEnd && s.LineStart > 0 {
-				if isLineInDiff(validLines, s.File, s.LineStart) {
-					comment.StartLine = ghclient.Ptr(s.LineStart)
-					comment.StartSide = ghclient.Ptr("RIGHT")
-				}
-			}
-
+		if diffInfo.contains(s.File, s.LineEnd) {
+			comment := buildReviewComment(s, diffInfo)
 			comments = append(comments, comment)
 		} else {
-			// Line not in diff, add to unresolved list
 			unresolvedSuggestions = append(unresolvedSuggestions, s)
 		}
 	}
@@ -297,7 +295,7 @@ func (r *Reviewer) PostReview(ctx context.Context, owner, repo string, prNumber 
 		body.WriteString("\n\n---\n\n## Additional Suggestions (outside diff context)\n\n")
 		for i, s := range unresolvedSuggestions {
 			body.WriteString(fmt.Sprintf("### %d. `%s` (lines %d-%d) - %s\n\n",
-				i+1, s.File, s.LineStart, s.LineEnd, strings.ToUpper(s.Severity)))
+				i+1, s.File, s.LineStart, s.LineEnd, s.NormalizedSeverity()))
 			body.WriteString(s.Message)
 			if s.Suggestion != "" {
 				body.WriteString(fmt.Sprintf("\n\n```suggestion\n%s\n```", s.Suggestion))
@@ -312,80 +310,155 @@ func (r *Reviewer) PostReview(ctx context.Context, owner, repo string, prNumber 
 		event = "APPROVE"
 	}
 
+	log.Info("submitting review",
+		"inline_comments", len(comments),
+		"unresolved_suggestions", len(unresolvedSuggestions),
+		"event", event)
+
 	// Submit review with inline comments
 	review := &gh.PullRequestReviewRequest{
-		CommitID: ghclient.Ptr(commitSHA),
+		CommitID: ghclient.Ptr(output.CommitSHA),
 		Body:     ghclient.Ptr(body.String()),
 		Event:    ghclient.Ptr(event),
 		Comments: comments,
 	}
 
-	_, err = r.github.CreateReview(ctx, owner, repo, prNumber, review)
+	_, err := r.github.CreateReview(ctx, owner, repo, prNumber, review)
 	if err != nil {
-		return fmt.Errorf("create review: %w", err)
+		return fmt.Errorf("post review to %s/%s#%d: %w", owner, repo, prNumber, err)
 	}
 
+	log.Info("review posted successfully")
 	return nil
 }
 
-// diffLineRange represents the valid line range for a file in the diff.
-type diffLineRange struct {
+// buildReviewComment creates a GitHub review comment from a suggestion.
+func buildReviewComment(s CodeSuggestion, diffInfo *diffLines) *gh.DraftReviewComment {
+	body := fmt.Sprintf("**%s**: %s", s.NormalizedSeverity(), s.Message)
+	if s.Suggestion != "" {
+		body += fmt.Sprintf("\n\n```suggestion\n%s\n```", s.Suggestion)
+	}
+
+	comment := &gh.DraftReviewComment{
+		Path: ghclient.Ptr(s.File),
+		Body: ghclient.Ptr(body),
+		Line: ghclient.Ptr(s.LineEnd),
+		Side: ghclient.Ptr("RIGHT"),
+	}
+
+	// Multi-line comment if start line is also in diff
+	if s.LineStart != s.LineEnd && s.LineStart > 0 && diffInfo.contains(s.File, s.LineStart) {
+		comment.StartLine = ghclient.Ptr(s.LineStart)
+		comment.StartSide = ghclient.Ptr("RIGHT")
+	}
+
+	return comment
+}
+
+// lineRange represents a contiguous range of valid lines in a diff hunk.
+type lineRange struct {
 	start int
 	end   int
 }
 
-// parseDiffLines extracts valid line numbers from the diff.
-// Returns a map of filename -> list of valid line ranges.
-func parseDiffLines(diff string) map[string][]diffLineRange {
-	result := make(map[string][]diffLineRange)
+// diffLines stores the valid line ranges for files in a diff.
+type diffLines struct {
+	files map[string][]lineRange
+}
+
+// newDiffLines parses a unified diff and extracts valid line numbers.
+func newDiffLines(diff string) *diffLines {
+	dl := &diffLines{files: make(map[string][]lineRange)}
 	lines := strings.Split(diff, "\n")
 
-	var currentFile string
-	var currentStart, currentLine int
+	var (
+		currentFile  string
+		currentLine  int
+		rangeStart   int
+		inRange      bool
+	)
+
+	flushRange := func() {
+		if inRange && currentFile != "" && rangeStart > 0 {
+			dl.files[currentFile] = append(dl.files[currentFile], lineRange{
+				start: rangeStart,
+				end:   currentLine - 1,
+			})
+			inRange = false
+		}
+	}
 
 	for _, line := range lines {
-		// New file in diff
-		if strings.HasPrefix(line, "+++ b/") {
+		switch {
+		case strings.HasPrefix(line, "+++ b/"):
+			flushRange()
 			currentFile = strings.TrimPrefix(line, "+++ b/")
-			continue
-		}
+			currentLine = 0
 
-		// Hunk header: @@ -old,count +new,count @@
-		if strings.HasPrefix(line, "@@") {
-			// Parse the new file line number from +new,count
-			parts := strings.Split(line, "+")
-			if len(parts) >= 2 {
-				numPart := strings.Split(parts[1], ",")[0]
-				numPart = strings.Split(numPart, " ")[0]
-				fmt.Sscanf(numPart, "%d", &currentStart)
-				currentLine = currentStart
+		case strings.HasPrefix(line, "@@"):
+			flushRange()
+			// Parse hunk header: @@ -old,count +new,count @@
+			if start := parseHunkStart(line); start > 0 {
+				currentLine = start
 			}
-			continue
-		}
 
-		// Track line numbers for added/context lines (not removed lines)
-		if currentFile != "" && currentLine > 0 {
-			if strings.HasPrefix(line, "+") || strings.HasPrefix(line, " ") {
-				// This line exists in the new version
-				result[currentFile] = append(result[currentFile], diffLineRange{
-					start: currentLine,
-					end:   currentLine,
-				})
+		case currentFile != "" && currentLine > 0:
+			switch {
+			case strings.HasPrefix(line, "+"), strings.HasPrefix(line, " "):
+				// Line exists in new version - track it
+				if !inRange {
+					rangeStart = currentLine
+					inRange = true
+				}
 				currentLine++
-			} else if strings.HasPrefix(line, "-") {
-				// Removed line, don't increment currentLine
-			} else if line == "" || (!strings.HasPrefix(line, "\\") && !strings.HasPrefix(line, "diff")) {
+
+			case strings.HasPrefix(line, "-"):
+				// Removed line - flush current range, don't increment
+				flushRange()
+
+			case strings.HasPrefix(line, "\\"):
+				// "\ No newline at end of file" - ignore
+
+			default:
+				// Context line continuation
+				if !inRange {
+					rangeStart = currentLine
+					inRange = true
+				}
 				currentLine++
 			}
 		}
 	}
 
-	return result
+	flushRange()
+	return dl
 }
 
-// isLineInDiff checks if a specific line number is valid in the diff for a file.
-func isLineInDiff(validLines map[string][]diffLineRange, file string, line int) bool {
-	ranges, ok := validLines[file]
+// parseHunkStart extracts the starting line number from a hunk header.
+// Format: @@ -old,count +new,count @@ optional context
+func parseHunkStart(header string) int {
+	// Find the +N part
+	plusIdx := strings.Index(header, "+")
+	if plusIdx == -1 {
+		return 0
+	}
+
+	// Extract number after +
+	rest := header[plusIdx+1:]
+	var start int
+	for i, c := range rest {
+		if c >= '0' && c <= '9' {
+			start = start*10 + int(c-'0')
+		} else if i > 0 {
+			break
+		}
+	}
+	return start
+}
+
+// contains checks if a line number is valid in the diff for the given file.
+func (dl *diffLines) contains(file string, line int) bool {
+	ranges, ok := dl.files[file]
 	if !ok {
 		return false
 	}
@@ -412,21 +485,3 @@ func formatFiles(files []*gh.CommitFile) string {
 	return sb.String()
 }
 
-// hasErrors checks if any suggestions have error severity.
-func hasErrors(suggestions []CodeSuggestion) bool {
-	for _, s := range suggestions {
-		if strings.ToLower(s.Severity) == "error" {
-			return true
-		}
-	}
-	return false
-}
-
-// GetCommitSHA returns the head SHA of a PR.
-func (r *Reviewer) GetCommitSHA(ctx context.Context, owner, repo string, prNumber int) (string, error) {
-	pr, err := r.github.GetPR(ctx, owner, repo, prNumber)
-	if err != nil {
-		return "", err
-	}
-	return pr.GetHead().GetSHA(), nil
-}

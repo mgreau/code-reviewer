@@ -77,10 +77,12 @@ func main() {
 	fmt.Printf("Reviewing PR %s/%s#%d using %s (via Vertex AI)...\n", *owner, *repo, *pr, *provider)
 
 	// Perform the review
-	result, err := rev.Review(ctx, *owner, *repo, *pr)
+	output, err := rev.Review(ctx, *owner, *repo, *pr)
 	if err != nil {
 		log.Fatalf("Review failed: %v", err)
 	}
+
+	result := output.Result
 
 	// Print the review summary
 	fmt.Println("\n=== Review Summary ===")
@@ -102,13 +104,8 @@ func main() {
 
 	// Post to GitHub unless dry-run
 	if !*dryRun {
-		commitSHA, err := rev.GetCommitSHA(ctx, *owner, *repo, *pr)
-		if err != nil {
-			log.Fatalf("Failed to get commit SHA: %v", err)
-		}
-
 		fmt.Println("\nPosting review to GitHub...")
-		if err := rev.PostReview(ctx, *owner, *repo, *pr, result, commitSHA); err != nil {
+		if err := rev.PostReview(ctx, *owner, *repo, *pr, output); err != nil {
 			log.Fatalf("Failed to post review: %v", err)
 		}
 		fmt.Println("Review posted successfully!")

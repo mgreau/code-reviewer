@@ -14,6 +14,19 @@ import (
 	"golang.org/x/oauth2"
 )
 
+// PRClient defines the interface for GitHub PR operations.
+// This interface enables testing with mock implementations.
+type PRClient interface {
+	GetPR(ctx context.Context, owner, repo string, number int) (*github.PullRequest, error)
+	GetPRDiff(ctx context.Context, owner, repo string, number int) (string, error)
+	GetPRFiles(ctx context.Context, owner, repo string, number int) ([]*github.CommitFile, error)
+	GetFileContent(ctx context.Context, owner, repo, path, ref string) (string, error)
+	CreateReview(ctx context.Context, owner, repo string, number int, review *github.PullRequestReviewRequest) (*github.PullRequestReview, error)
+}
+
+// Ensure Client implements PRClient.
+var _ PRClient = (*Client)(nil)
+
 // Client wraps the GitHub API client for PR operations.
 type Client struct {
 	gh *github.Client
