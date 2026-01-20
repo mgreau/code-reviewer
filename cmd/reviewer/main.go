@@ -23,6 +23,9 @@ func main() {
 	pr := flag.Int("pr", 0, "Pull request number (required)")
 	provider := flag.String("provider", "claude", "AI provider: claude or gemini")
 	dryRun := flag.Bool("dry-run", false, "Print review without posting to GitHub")
+	useJudge := flag.Bool("judge", false, "Use AI judge to filter low-quality suggestions")
+	judgeModel := flag.String("judge-model", "gemini-2.5-flash", "Model to use for judging")
+	judgeMinScore := flag.Float64("judge-min-score", 0.5, "Minimum judge score (0.0-1.0) to include a suggestion")
 	flag.Parse()
 
 	// Validate required flags
@@ -90,14 +93,44 @@ func main() {
 	fmt.Printf("\nApproved: %v\n", result.Approved)
 	fmt.Printf("Suggestions: %d\n", len(result.Suggestions))
 
+	// Apply judge if enabled
+	judgeConfig := reviewer.JudgeConfig{
+		Enabled:  *useJudge,
+		Model:    *judgeModel,
+		MinScore: *judgeMinScore,
+	}
+
+	judgedSuggestions, err := reviewer.JudgeSuggestions(ctx, projectID, location, judgeConfig, result.Suggestions)
+	if err != nil {
+		log.Fatalf("Judge evaluation failed: %v", err)
+	}
+
+	// Update result with filtered suggestions
+	if *useJudge {
+		originalCount := len(result.Suggestions)
+		result.Suggestions = reviewer.ExtractSuggestions(judgedSuggestions)
+		if originalCount != len(result.Suggestions) {
+			fmt.Printf("\nJudge filtered %d low-quality suggestions (threshold: %.2f)\n",
+				originalCount-len(result.Suggestions), *judgeMinScore)
+		}
+	}
+
 	// Print suggestions
-	if len(result.Suggestions) > 0 {
+	if len(judgedSuggestions) > 0 {
 		fmt.Println("\n=== Suggestions ===")
-		for i, s := range result.Suggestions {
-			fmt.Printf("\n[%d] %s:%d-%d (%s)\n", i+1, s.File, s.LineStart, s.LineEnd, s.Severity)
+		for i, js := range judgedSuggestions {
+			s := js.Suggestion
+			if *useJudge {
+				fmt.Printf("\n[%d] %s:%d-%d (%s) [score: %.2f]\n", i+1, s.File, s.LineStart, s.LineEnd, s.Severity, js.Score)
+			} else {
+				fmt.Printf("\n[%d] %s:%d-%d (%s)\n", i+1, s.File, s.LineStart, s.LineEnd, s.Severity)
+			}
 			fmt.Printf("    %s\n", s.Message)
 			if s.Suggestion != "" {
 				fmt.Printf("    Suggestion: %s\n", s.Suggestion)
+			}
+			if *useJudge && js.Reasoning != "" {
+				fmt.Printf("    Judge reasoning: %s\n", js.Reasoning)
 			}
 		}
 	}

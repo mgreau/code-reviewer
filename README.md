@@ -73,6 +73,38 @@ reviewer -owner=myorg -repo=myrepo -pr=123 -dry-run
 | `-pr` | Pull request number | Yes | - |
 | `-provider` | AI provider: `claude` or `gemini` | No | `claude` |
 | `-dry-run` | Preview review without posting to GitHub | No | `false` |
+| `-judge` | Enable AI judge to filter low-quality suggestions | No | `false` |
+| `-judge-model` | Model to use for judging | No | `gemini-2.5-flash` |
+| `-judge-min-score` | Minimum score (0.0-1.0) to include a suggestion | No | `0.5` |
+
+## AI Judge
+
+The code-reviewer includes an optional AI judge that evaluates each suggestion for quality before posting. The judge evaluates suggestions on:
+
+- **Accuracy**: Is the issue correctly identified?
+- **Actionability**: Is the suggestion specific enough to act on?
+- **Value**: Does this issue matter for code quality?
+- **Clarity**: Is the message clear and easy to understand?
+
+### Using the Judge
+
+```bash
+# Enable judge with default settings (min score 0.5)
+reviewer -owner=myorg -repo=myrepo -pr=123 -judge
+
+# Use a higher threshold to only include high-quality suggestions
+reviewer -owner=myorg -repo=myrepo -pr=123 -judge -judge-min-score=0.7
+
+# Use a different model for judging
+reviewer -owner=myorg -repo=myrepo -pr=123 -judge -judge-model=gemini-2.5-flash
+```
+
+### Judge Output
+
+When the judge is enabled, each suggestion includes:
+- **Score**: 0.0 to 1.0 rating of suggestion quality
+- **Reasoning**: Explanation of the score
+- Suggestions below the threshold are filtered out
 
 ## Architecture
 
@@ -111,6 +143,7 @@ This tool uses the following Driftless packages:
 | `submitresult` | Structured result submission |
 | `toolcall/claudetool` | Claude tool parameter extraction |
 | `toolcall/googletool` | Gemini tool parameter extraction |
+| `judge` | AI judge for evaluating suggestion quality |
 
 ## Development
 
