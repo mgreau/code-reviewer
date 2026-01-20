@@ -239,19 +239,63 @@ func (r *Reviewer) geminiReadFileTool(owner, repo, sha string) googleexecutor.To
 	}
 }
 
-// PostReview submits the review to GitHub.
+// PostReview submits the review to GitHub with inline comments.
 func (r *Reviewer) PostReview(ctx context.Context, owner, repo string, prNumber int, result *ReviewResult, commitSHA string) error {
 	if r.github == nil {
 		return fmt.Errorf("GitHub client not set")
 	}
 
-	// Build the review body with inline suggestions as markdown
+	// Get the diff to determine valid line numbers
+	diff, err := r.github.GetPRDiff(ctx, owner, repo, prNumber)
+	if err != nil {
+		return fmt.Errorf("get diff for line validation: %w", err)
+	}
+
+	// Parse diff to get valid line ranges per file
+	validLines := parseDiffLines(diff)
+
+	// Build inline comments for suggestions with valid line numbers
+	var comments []*gh.DraftReviewComment
+	var unresolvedSuggestions []CodeSuggestion
+
+	for _, s := range result.Suggestions {
+		// Check if the line is in the diff
+		if isLineInDiff(validLines, s.File, s.LineEnd) {
+			body := fmt.Sprintf("**%s**: %s", strings.ToUpper(s.Severity), s.Message)
+			if s.Suggestion != "" {
+				body += fmt.Sprintf("\n\n```suggestion\n%s\n```", s.Suggestion)
+			}
+
+			comment := &gh.DraftReviewComment{
+				Path: ghclient.Ptr(s.File),
+				Body: ghclient.Ptr(body),
+				Line: ghclient.Ptr(s.LineEnd),
+				Side: ghclient.Ptr("RIGHT"), // Comment on the new version
+			}
+
+			// Multi-line comment
+			if s.LineStart != s.LineEnd && s.LineStart > 0 {
+				if isLineInDiff(validLines, s.File, s.LineStart) {
+					comment.StartLine = ghclient.Ptr(s.LineStart)
+					comment.StartSide = ghclient.Ptr("RIGHT")
+				}
+			}
+
+			comments = append(comments, comment)
+		} else {
+			// Line not in diff, add to unresolved list
+			unresolvedSuggestions = append(unresolvedSuggestions, s)
+		}
+	}
+
+	// Build the review body
 	var body strings.Builder
 	body.WriteString(result.Summary)
 
-	if len(result.Suggestions) > 0 {
-		body.WriteString("\n\n---\n\n## Suggestions\n\n")
-		for i, s := range result.Suggestions {
+	// Add unresolved suggestions to the body (lines not in diff)
+	if len(unresolvedSuggestions) > 0 {
+		body.WriteString("\n\n---\n\n## Additional Suggestions (outside diff context)\n\n")
+		for i, s := range unresolvedSuggestions {
 			body.WriteString(fmt.Sprintf("### %d. `%s` (lines %d-%d) - %s\n\n",
 				i+1, s.File, s.LineStart, s.LineEnd, strings.ToUpper(s.Severity)))
 			body.WriteString(s.Message)
@@ -263,26 +307,95 @@ func (r *Reviewer) PostReview(ctx context.Context, owner, repo string, prNumber 
 	}
 
 	// Determine review event
-	// Note: REQUEST_CHANGES doesn't work on your own PRs, so we use COMMENT for non-approved reviews
 	event := "COMMENT"
 	if result.Approved {
 		event = "APPROVE"
 	}
 
-	// Submit review without inline comments (they require exact diff line matching)
-	// Instead, include all suggestions in the review body
+	// Submit review with inline comments
 	review := &gh.PullRequestReviewRequest{
 		CommitID: ghclient.Ptr(commitSHA),
 		Body:     ghclient.Ptr(body.String()),
 		Event:    ghclient.Ptr(event),
+		Comments: comments,
 	}
 
-	_, err := r.github.CreateReview(ctx, owner, repo, prNumber, review)
+	_, err = r.github.CreateReview(ctx, owner, repo, prNumber, review)
 	if err != nil {
 		return fmt.Errorf("create review: %w", err)
 	}
 
 	return nil
+}
+
+// diffLineRange represents the valid line range for a file in the diff.
+type diffLineRange struct {
+	start int
+	end   int
+}
+
+// parseDiffLines extracts valid line numbers from the diff.
+// Returns a map of filename -> list of valid line ranges.
+func parseDiffLines(diff string) map[string][]diffLineRange {
+	result := make(map[string][]diffLineRange)
+	lines := strings.Split(diff, "\n")
+
+	var currentFile string
+	var currentStart, currentLine int
+
+	for _, line := range lines {
+		// New file in diff
+		if strings.HasPrefix(line, "+++ b/") {
+			currentFile = strings.TrimPrefix(line, "+++ b/")
+			continue
+		}
+
+		// Hunk header: @@ -old,count +new,count @@
+		if strings.HasPrefix(line, "@@") {
+			// Parse the new file line number from +new,count
+			parts := strings.Split(line, "+")
+			if len(parts) >= 2 {
+				numPart := strings.Split(parts[1], ",")[0]
+				numPart = strings.Split(numPart, " ")[0]
+				fmt.Sscanf(numPart, "%d", &currentStart)
+				currentLine = currentStart
+			}
+			continue
+		}
+
+		// Track line numbers for added/context lines (not removed lines)
+		if currentFile != "" && currentLine > 0 {
+			if strings.HasPrefix(line, "+") || strings.HasPrefix(line, " ") {
+				// This line exists in the new version
+				result[currentFile] = append(result[currentFile], diffLineRange{
+					start: currentLine,
+					end:   currentLine,
+				})
+				currentLine++
+			} else if strings.HasPrefix(line, "-") {
+				// Removed line, don't increment currentLine
+			} else if line == "" || (!strings.HasPrefix(line, "\\") && !strings.HasPrefix(line, "diff")) {
+				currentLine++
+			}
+		}
+	}
+
+	return result
+}
+
+// isLineInDiff checks if a specific line number is valid in the diff for a file.
+func isLineInDiff(validLines map[string][]diffLineRange, file string, line int) bool {
+	ranges, ok := validLines[file]
+	if !ok {
+		return false
+	}
+
+	for _, r := range ranges {
+		if line >= r.start && line <= r.end {
+			return true
+		}
+	}
+	return false
 }
 
 // formatFiles creates a formatted string of changed files.
