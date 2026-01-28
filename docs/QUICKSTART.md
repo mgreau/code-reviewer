@@ -1,6 +1,6 @@
 # Quick Start
 
-Get started with code-reviewer in minuts.
+Get started with code-reviewer in minutes.
 
 ## Setup
 
