@@ -18,4 +18,4 @@ Run the folowing command:
 reviewer -owner=myorg -repo=myrepo -pr=123
 ```
 
-Thats it!
+That's it!
