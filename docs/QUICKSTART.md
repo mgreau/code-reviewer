@@ -8,7 +8,14 @@ Get started with code-reviewer in minutes.
 +--------+      +--------+      +--------+
 | Setup  |----->| Review |----->| Done!  |
 +--------+      +--------+      +--------+
- ![Flow Diagram](./QUICKSTART-diagram-7-3f6cea21.png)
+<!-- ASCII diagram source:
++--------+      +--------+      +--------+
+| Setup  |----->| Review |----->| Done!  |
++--------+      +--------+      +--------+
+
+-->
+
+![Flow Diagram](docs/images/QUICKSTART-diagram-7-3f6cea21.png)
 
 ## Usage
 
