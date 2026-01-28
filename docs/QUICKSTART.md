@@ -8,14 +8,14 @@ Get started with code-reviewer in minutes.
 +--------+      +--------+      +--------+
 | Setup  |----->| Review |----->| Done!  |
 +--------+      +--------+      +--------+
-```
+![Flow Diagram](docs/images/QUICKSTART-diagram-7-3f6cea21.png)
 
 ## Usage
 
-Run the folowing command:
+Run the following command:
 
 ```bash
 reviewer -owner=myorg -repo=myrepo -pr=123
 ```
 
-Thats it!
+That's it!
