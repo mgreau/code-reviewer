@@ -19,7 +19,7 @@ Get started with code-reviewer in minuts.
 
 ## Usage
 
-Run the folowing command:
+Run the following command:
 
 ```bash
 reviewer -owner=myorg -repo=myrepo -pr=123
