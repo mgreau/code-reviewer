@@ -58,6 +58,9 @@ We follow the standard Go code style. Please ensure your code:
 
 - All tests must pass
 - Code must be formated and pass linting
+
+<img width="776" height="428" alt="Image" src="https://github.com/user-attachments/assets/4577bc0f-75a9-46bc-a2e5-25a7c2980b01" />
+
 - New features should include apropriate documentation
 - Breaking changes must be clearly documented
 
