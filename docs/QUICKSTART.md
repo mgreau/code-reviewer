@@ -1,6 +1,6 @@
 # Quick Start
 
-Get started with code-reviewer in minutes.
+Get started with code-reviewer in minuts.
 
 ## Setup
 
@@ -8,14 +8,14 @@ Get started with code-reviewer in minutes.
 +--------+      +--------+      +--------+
 | Setup  |----->| Review |----->| Done!  |
 +--------+      +--------+      +--------+
- ![Flow Diagram](./QUICKSTART-diagram-7-3f6cea21.png)
+```
 
 ## Usage
 
-Run the following command:
+Run the folowing command:
 
 ```bash
 reviewer -owner=myorg -repo=myrepo -pr=123
 ```
 
-That's it!
+Thats it!
