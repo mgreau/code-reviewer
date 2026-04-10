@@ -1,6 +1,6 @@
 # Code Reviewer
 
-A CLI tool that uses AI to review GitHub Pull Requests. Supports both **Claude** and **Gemini** models via **Google Cloud Vertex AI**. Built with the [Driftless](../mono/driftless) framework for structured AI agent execution.
+A CLI tool that uses AI to review GitHub pull requests. Supports both **Claude** and **Gemini** models via **Google Cloud Vertex AI**. Built with the [DriftlessAF](https://github.com/driftlessaf) framework for structured AI agent execution.
 
 ## Features
 
@@ -19,14 +19,14 @@ A CLI tool that uses AI to review GitHub Pull Requests. Supports both **Claude**
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────────┐
-│                              CODE-REVIEWER CLI                                   │
-│                                                                                  │
+│                              CODE-REVIEWER CLI                                  │
+│                                                                                 │
 │  $ reviewer -owner=myorg -repo=myrepo -pr=123 -judge                            │
 └─────────────────────────────────────────────────────────────────────────────────┘
                                        │
                                        ▼
 ┌─────────────────────────────────────────────────────────────────────────────────┐
-│                            1. FETCH PR DATA                                      │
+│                            1. FETCH PR DATA                                     │
 │  ┌──────────────┐                                                               │
 │  │  GitHub API  │◄────── Get PR metadata, diff, and changed files               │
 │  └──────────────┘                                                               │
@@ -34,56 +34,56 @@ A CLI tool that uses AI to review GitHub Pull Requests. Supports both **Claude**
                                        │
                                        ▼
 ┌─────────────────────────────────────────────────────────────────────────────────┐
-│                         2. AI CODE REVIEW (Driftless)                            │
-│                                                                                  │
+│                         2. AI CODE REVIEW (Driftless)                           │
+│                                                                                 │
 │  ┌─────────────────────────────────────────────────────────────────────────┐    │
-│  │                         promptbuilder                                    │    │
+│  │                         promptbuilder                                   │    │
 │  │  ┌─────────────┐    Bind PR data to prompt template with XML/CDATA      │    │
 │  │  │ ReviewPrompt│───► {{pr_info}} {{files}} {{diff}}                     │    │
 │  │  └─────────────┘                                                        │    │
 │  └─────────────────────────────────────────────────────────────────────────┘    │
-│                                       │                                          │
-│                                       ▼                                          │
+│                                       │                                         │
+│                                       ▼                                         │
 │  ┌─────────────────────────────────────────────────────────────────────────┐    │
-│  │              claudeexecutor / googleexecutor                             │    │
-│  │                                                                          │    │
+│  │              claudeexecutor / googleexecutor                            │    │
+│  │                                                                         │    │
 │  │   ┌──────────────────┐         ┌──────────────────┐                     │    │
 │  │   │  Claude Opus 4.5 │   OR    │  Gemini 2.5 Flash│                     │    │
 │  │   │  (Vertex AI)     │         │  (Vertex AI)     │                     │    │
 │  │   └────────┬─────────┘         └────────┬─────────┘                     │    │
-│  │            │                            │                                │    │
-│  │            └────────────┬───────────────┘                                │    │
-│  │                         │                                                │    │
-│  │            ┌────────────▼───────────────┐                                │    │
-│  │            │     Tool: read_file        │◄─── Read full file content     │    │
-│  │            │  (claudetool/googletool)   │     for additional context     │    │
-│  │            └────────────┬───────────────┘                                │    │
-│  │                         │                                                │    │
-│  │            ┌────────────▼───────────────┐                                │    │
-│  │            │   Tool: submit_result      │◄─── Structured JSON response   │    │
-│  │            │     (submitresult)         │     with ReviewResult type     │    │
-│  │            └────────────────────────────┘                                │    │
+│  │            │                            │                               │    │
+│  │            └────────────┬───────────────┘                               │    │
+│  │                         │                                               │    │
+│  │            ┌────────────▼───────────────┐                               │    │
+│  │            │     Tool: read_file        │◄─── Read full file content    │    │
+│  │            │  (claudetool/googletool)   │     for additional context    │    │
+│  │            └────────────┬───────────────┘                               │    │
+│  │                         │                                               │    │
+│  │            ┌────────────▼───────────────┐                               │    │
+│  │            │   Tool: submit_result      │◄─── Structured JSON response  │    │
+│  │            │     (submitresult)         │     with ReviewResult type    │    │
+│  │            └────────────────────────────┘                               │    │
 │  └─────────────────────────────────────────────────────────────────────────┘    │
-│                                       │                                          │
-│                                       ▼                                          │
+│                                       │                                         │
+│                                       ▼                                         │
 │  ┌─────────────────────────────────────────────────────────────────────────┐    │
-│  │                          ReviewResult                                    │    │
-│  │  {                                                                       │    │
-│  │    "summary": "Found 5 issues...",                                       │    │
-│  │    "suggestions": [...],        ◄─── CodeSuggestion[]                    │    │
-│  │    "approved": false                                                     │    │
-│  │  }                                                                       │    │
+│  │                          ReviewResult                                   │    │
+│  │  {                                                                      │    │
+│  │    "summary": "Found 5 issues...",                                      │    │
+│  │    "suggestions": [...],        ◄─── CodeSuggestion[]                   │    │
+│  │    "approved": false                                                    │    │
+│  │  }                                                                      │    │
 │  └─────────────────────────────────────────────────────────────────────────┘    │
 └─────────────────────────────────────────────────────────────────────────────────┘
                                        │
                                        ▼
 ┌─────────────────────────────────────────────────────────────────────────────────┐
-│                      3. JUDGE EVALUATION (Optional)                              │
-│                                                                                  │
+│                      3. JUDGE EVALUATION (Optional)                             │
+│                                                                                 │
 │  ┌─────────────────────────────────────────────────────────────────────────┐    │
-│  │                           judge.NewVertex                                │    │
-│  │                                                                          │    │
-│  │   For each suggestion:                                                   │    │
+│  │                           judge.NewVertex                               │    │
+│  │                                                                         │    │
+│  │   For each suggestion:                                                  │    │
 │  │   ┌──────────────────────────────────────────────────────────────────┐  │    │
 │  │   │  StandaloneMode evaluation                                       │  │    │
 │  │   │  • Accuracy: Is the issue correctly identified?                  │  │    │
@@ -92,29 +92,29 @@ A CLI tool that uses AI to review GitHub Pull Requests. Supports both **Claude**
 │  │   │  • Clarity: Is the message clear?                                │  │    │
 │  │   │                                                                  │  │    │
 │  │   │  Score: 0.0 ──────────────────────────────────────────────► 1.0  │  │    │
-│  │   │         Poor                                            Excellent │  │    │
+│  │   │         Poor                                           Excellent │  │    │
 │  │   └──────────────────────────────────────────────────────────────────┘  │    │
-│  │                                                                          │    │
+│  │                                                                         │    │
 │  │   Filter: score < min_score (default 0.5) ───► Removed from results     │    │
 │  └─────────────────────────────────────────────────────────────────────────┘    │
 └─────────────────────────────────────────────────────────────────────────────────┘
                                        │
                                        ▼
 ┌─────────────────────────────────────────────────────────────────────────────────┐
-│                          4. POST TO GITHUB                                       │
-│                                                                                  │
+│                          4. POST TO GITHUB                                      │
+│                                                                                 │
 │  ┌─────────────────────────────────────────────────────────────────────────┐    │
-│  │                        Parse Diff Lines                                  │    │
-│  │  Map suggestion line numbers to valid diff positions for inline comments │    │
+│  │                        Parse Diff Lines                                 │    │
+│  │ Map suggestion line numbers to valid diff positions for inline comments │    │
 │  └─────────────────────────────────────────────────────────────────────────┘    │
-│                                       │                                          │
-│                                       ▼                                          │
+│                                       │                                         │
+│                                       ▼                                         │
 │  ┌─────────────────────────────────────────────────────────────────────────┐    │
-│  │                     GitHub PR Review API                                 │    │
-│  │                                                                          │    │
-│  │   • Inline comments on specific lines (if in diff)                       │    │
-│  │   • Review body with summary + suggestions outside diff                  │    │
-│  │   • Event: APPROVE (if approved) or COMMENT (if issues found)            │    │
+│  │                     GitHub PR Review API                                │    │
+│  │                                                                         │    │
+│  │   • Inline comments on specific lines (if in diff)                      │    │
+│  │   • Review body with summary + suggestions outside diff                 │    │
+│  │   • Event: APPROVE (if approved) or COMMENT (if issues found)           │    │
 │  └─────────────────────────────────────────────────────────────────────────┘    │
 └─────────────────────────────────────────────────────────────────────────────────┘
                                        │
@@ -145,7 +145,7 @@ A CLI tool that uses AI to review GitHub Pull Requests. Supports both **Claude**
 ## Installation
 
 ```bash
-go install github.com/example/code-reviewer/cmd/reviewer@latest
+go install github.com/mgreau/code-reviewer/cmd/reviewer@latest
 ```
 
 Or build from source:
