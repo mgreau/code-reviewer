@@ -11,7 +11,7 @@ import (
 	"fmt"
 	"log/slog"
 
-	"chainguard.dev/driftless/pkg/judge"
+	"chainguard.dev/driftlessaf/agents/judge"
 )
 
 // JudgeConfig contains configuration for the judge evaluation.

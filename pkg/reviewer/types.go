@@ -58,11 +58,13 @@ func (s *CodeSuggestion) NormalizedSeverity() string {
 
 // ReviewRequest contains all the data needed to review a PR.
 type ReviewRequest struct {
-	Repo        string `json:"repo"`
-	Title       string `json:"title"`
-	Description string `json:"description"`
-	Files       string `json:"files"`
-	Diff        string `json:"diff"`
+	Repo         string `json:"repo"`
+	Title        string `json:"title"`
+	Description  string `json:"description"`
+	Files        string `json:"files"`
+	Diff         string `json:"diff"`
+	Skills       string `json:"skills"`
+	Conversation string `json:"conversation"`
 }
 
 // ReviewOutput contains the review result and metadata needed for posting.
