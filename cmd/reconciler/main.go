@@ -15,6 +15,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/url"
 	"os"
 	"os/signal"
@@ -25,11 +26,10 @@ import (
 	"chainguard.dev/driftlessaf/workqueue"
 	"github.com/sethvargo/go-envconfig"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/health"
 	healthgrpc "google.golang.org/grpc/health/grpc_health_v1"
 	"google.golang.org/grpc/status"
-
-	"net"
 
 	"github.com/example/code-reviewer/pkg/reviewer"
 )
@@ -119,7 +119,7 @@ func (s *server) Process(ctx context.Context, req *workqueue.ProcessRequest) (*w
 	if err != nil {
 		s.log.Error("skip invalid key", "key", key, "err", err)
 		// Don't retry malformed keys — they'd just loop until DLQ.
-		return nil, status.Errorf(3 /* InvalidArgument */, "parse key %q: %v", key, err)
+		return nil, status.Errorf(codes.InvalidArgument, "parse key %q: %v", key, err)
 	}
 
 	log := s.log.With("owner", owner, "repo", repo, "pr", pr)
