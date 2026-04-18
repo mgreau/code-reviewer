@@ -6,8 +6,10 @@ require (
 	chainguard.dev/driftlessaf v0.5.0
 	github.com/anthropics/anthropic-sdk-go v1.20.0
 	github.com/google/go-github/v68 v68.0.0
+	github.com/sethvargo/go-envconfig v1.3.0
 	golang.org/x/oauth2 v0.36.0
 	google.golang.org/genai v1.36.0
+	google.golang.org/grpc v1.80.0
 )
 
 require (
@@ -60,7 +62,6 @@ require (
 	github.com/prometheus/common v0.67.5 // indirect
 	github.com/prometheus/otlptranslator v1.0.0 // indirect
 	github.com/prometheus/procfs v0.20.1 // indirect
-	github.com/sethvargo/go-envconfig v1.3.0 // indirect
 	github.com/shirou/gopsutil/v4 v4.25.11 // indirect
 	github.com/tidwall/gjson v1.18.0 // indirect
 	github.com/tidwall/match v1.1.1 // indirect
@@ -93,7 +94,6 @@ require (
 	google.golang.org/api v0.272.0 // indirect
 	google.golang.org/genproto/googleapis/api v0.0.0-20260401024825-9d38bb4040a9 // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20260401024825-9d38bb4040a9 // indirect
-	google.golang.org/grpc v1.80.0 // indirect
 	google.golang.org/protobuf v1.36.11 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )

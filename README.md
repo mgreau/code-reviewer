@@ -18,6 +18,7 @@ It mirrors the capabilities of [vercel-labs/openreview](https://github.com/verce
 - [AI Judge](#ai-judge)
 - [Feature Parity with openreview](#feature-parity-with-openreview)
 - [Architecture](#architecture)
+- [Deployment (Cloud Run reconciler)](#deployment-cloud-run-reconciler)
 - [Development](#development)
 
 ## Features
@@ -372,6 +373,21 @@ code-reviewer/
 | `agents/toolcall/googletool` | Gemini tool parameter extraction |
 | `agents/agenttrace` | Tool-call trace types |
 | `agents/judge` | Suggestion quality evaluator |
+
+## Deployment (Cloud Run reconciler)
+
+For a production-style deployment on GCP, the repo ships a workqueue-backed reconciler that replaces `serve` mode. Shape:
+
+```
+GitHub ─webhook─▶ github-events  ──▶ broker ──▶ workqueue ──▶ reconciler ──▶ GitHub
+                 (Cloud Run)         (Pub/Sub)   (GCS+PubSub)  (cmd/reconciler)
+```
+
+The reconciler dedupes by PR URL — a burst of `@bot` comments on one PR collapses into a single review. No Dockerfile, no DNS, no load balancer; `ko` builds the image and Cloud Run hands back a `.run.app` URL that GitHub posts to directly.
+
+- **Quick start**: [`deploy/terraform/README.md`](deploy/terraform/README.md) — enable APIs, create the token secret, `terraform apply`, wire the webhook.
+- **Guided walkthrough**: ask Claude Code "deploy code-reviewer" to invoke the [`code-reviewer-deploy`](~/.claude/skills/code-reviewer-deploy/SKILL.md) skill, which progressively walks through bootstrap → secrets → apply → webhook → smoke test with troubleshooting for each step.
+- **Scope**: the reconciler currently handles the `review` verb only. `apply` and `skip` still live in `reviewer serve` — run serve locally (or deploy it separately) if you need those verbs.
 
 ## Development
 
