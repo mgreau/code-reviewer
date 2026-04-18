@@ -102,7 +102,7 @@ func runReview() {
 		if err != nil {
 			log.Fatalf("clone: %v", err)
 		}
-		defer wd.Close()
+		defer func() { _ = wd.Close() }()
 		if err := wd.ConfigureGit(ctx, githubToken, "", ""); err != nil {
 			log.Fatalf("configure git: %v", err)
 		}

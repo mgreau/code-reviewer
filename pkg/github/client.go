@@ -148,7 +148,7 @@ func (c *Client) ListIssueComments(ctx context.Context, owner, repo string, numb
 		if resp.NextPage == 0 {
 			break
 		}
-		opts.ListOptions.Page = resp.NextPage
+		opts.Page = resp.NextPage
 	}
 	return all, nil
 }
@@ -172,7 +172,7 @@ func (c *Client) ListPullRequestReviewComments(ctx context.Context, owner, repo 
 		if resp.NextPage == 0 {
 			break
 		}
-		opts.ListOptions.Page = resp.NextPage
+		opts.Page = resp.NextPage
 	}
 	return all, nil
 }

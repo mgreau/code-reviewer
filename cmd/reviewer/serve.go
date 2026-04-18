@@ -211,7 +211,7 @@ func handleReview(ctx context.Context, log *slog.Logger, githubClient *ghclient.
 		return
 	}
 	if wd != nil {
-		defer wd.Close()
+		defer func() { _ = wd.Close() }()
 		rev.SetWorkdir(wd)
 	}
 
@@ -293,7 +293,7 @@ func handleApply(ctx context.Context, log *slog.Logger, githubClient *ghclient.C
 		postFailure(ctx, githubClient, owner, repo, pr, fmt.Errorf("apply requires a workdir"))
 		return
 	}
-	defer wd.Close()
+	defer func() { _ = wd.Close() }()
 	rev.SetWorkdir(wd)
 
 	res, err := rev.ApplySuggestions(ctx, owner, repo, pr, a.cmd.Nums, a.cmd.All)

@@ -394,11 +394,11 @@ func (r *Reviewer) PostReview(ctx context.Context, owner, repo string, prNumber 
 	if len(unresolvedSuggestions) > 0 {
 		body.WriteString("\n\n---\n\n## Additional Suggestions (outside diff context)\n\n")
 		for i, s := range unresolvedSuggestions {
-			body.WriteString(fmt.Sprintf("### %d. `%s` (lines %d-%d) - %s\n\n",
-				i+1, s.File, s.LineStart, s.LineEnd, s.NormalizedSeverity()))
+			fmt.Fprintf(&body, "### %d. `%s` (lines %d-%d) - %s\n\n",
+				i+1, s.File, s.LineStart, s.LineEnd, s.NormalizedSeverity())
 			body.WriteString(s.Message)
 			if s.Suggestion != "" {
-				body.WriteString(fmt.Sprintf("\n\n```suggestion\n%s\n```", s.Suggestion))
+				fmt.Fprintf(&body, "\n\n```suggestion\n%s\n```", s.Suggestion)
 			}
 			body.WriteString("\n\n")
 		}
@@ -635,7 +635,7 @@ func formatFiles(files []*gh.CommitFile) string {
 		additions := f.GetAdditions()
 		deletions := f.GetDeletions()
 
-		sb.WriteString(fmt.Sprintf("- %s (%s, +%d/-%d)\n", filename, status, additions, deletions))
+		fmt.Fprintf(&sb, "- %s (%s, +%d/-%d)\n", filename, status, additions, deletions)
 	}
 	return sb.String()
 }
