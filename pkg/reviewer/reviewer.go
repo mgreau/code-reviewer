@@ -11,18 +11,26 @@ import (
 	"log/slog"
 	"strings"
 
-	"chainguard.dev/driftless/pkg/evals"
-	"chainguard.dev/driftless/pkg/executor/claudeexecutor"
-	"chainguard.dev/driftless/pkg/executor/googleexecutor"
-	"chainguard.dev/driftless/pkg/submitresult"
-	"chainguard.dev/driftless/pkg/toolcall/claudetool"
-	"chainguard.dev/driftless/pkg/toolcall/googletool"
+	"chainguard.dev/driftlessaf/agents/agenttrace"
+	"chainguard.dev/driftlessaf/agents/executor/claudeexecutor"
+	"chainguard.dev/driftlessaf/agents/executor/googleexecutor"
+	"chainguard.dev/driftlessaf/agents/submitresult"
+	"chainguard.dev/driftlessaf/agents/toolcall/claudetool"
+	"chainguard.dev/driftlessaf/agents/toolcall/googletool"
 	"github.com/anthropics/anthropic-sdk-go"
 	"github.com/anthropics/anthropic-sdk-go/shared/constant"
 	"github.com/anthropics/anthropic-sdk-go/vertex"
 	ghclient "github.com/example/code-reviewer/pkg/github"
+	"github.com/example/code-reviewer/pkg/skills"
+	"github.com/example/code-reviewer/pkg/workdir"
 	gh "github.com/google/go-github/v68/github"
 	"google.golang.org/genai"
+)
+
+// Default models for each provider. Sonnet 4.6 matches openreview's default.
+const (
+	DefaultClaudeModel = "claude-sonnet-4-6@20251022"
+	DefaultGeminiModel = "gemini-2.5-flash"
 )
 
 // Reviewer orchestrates PR code reviews using AI.
@@ -31,10 +39,33 @@ type Reviewer struct {
 	claudeExec claudeexecutor.Interface[*ReviewRequest, *ReviewResult]
 	googleExec googleexecutor.Interface[*ReviewRequest, *ReviewResult]
 	provider   string
+
+	// workdir, when non-nil, grants the agent filesystem access via bash,
+	// read_file (local), and write_file tools. Openreview parity.
+	workdir *workdir.Workdir
+
+	// skills is the progressive skill catalogue. Names and descriptions are
+	// surfaced in the system prompt; full bodies load via the load_skill tool.
+	skills []skills.Skill
+
+	// conversation is the prior PR-comment thread included in the prompt.
+	// Populated when a review is triggered by an @mention so the agent can
+	// see earlier messages.
+	conversation string
+
+	// botLogin is the authenticated GitHub user. When set, PostReview numbers
+	// new inline comments globally (continuing from existing bot comments on
+	// the PR) so users can reference them as `@bot apply N`. ApplySuggestions
+	// also uses this to filter bot-authored comments.
+	botLogin string
 }
 
 // NewWithClaude creates a new Reviewer using Claude via Vertex AI.
-func NewWithClaude(ctx context.Context, projectID, location string) (*Reviewer, error) {
+// model may be empty, in which case DefaultClaudeModel is used.
+func NewWithClaude(ctx context.Context, projectID, location, model string) (*Reviewer, error) {
+	if model == "" {
+		model = DefaultClaudeModel
+	}
 	client := anthropic.NewClient(
 		vertex.WithGoogleAuth(ctx, location, projectID),
 	)
@@ -42,7 +73,7 @@ func NewWithClaude(ctx context.Context, projectID, location string) (*Reviewer, 
 	exec, err := claudeexecutor.New[*ReviewRequest, *ReviewResult](
 		client,
 		ReviewPrompt,
-		claudeexecutor.WithModel[*ReviewRequest, *ReviewResult]("claude-opus-4-5@20251101"),
+		claudeexecutor.WithModel[*ReviewRequest, *ReviewResult](model),
 		claudeexecutor.WithMaxTokens[*ReviewRequest, *ReviewResult](16000),
 		claudeexecutor.WithTemperature[*ReviewRequest, *ReviewResult](0.1),
 		claudeexecutor.WithSubmitResultProvider[*ReviewRequest, *ReviewResult](
@@ -60,7 +91,11 @@ func NewWithClaude(ctx context.Context, projectID, location string) (*Reviewer, 
 }
 
 // NewWithGemini creates a new Reviewer using Gemini via Vertex AI.
-func NewWithGemini(ctx context.Context, projectID, location string) (*Reviewer, error) {
+// model may be empty, in which case DefaultGeminiModel is used.
+func NewWithGemini(ctx context.Context, projectID, location, model string) (*Reviewer, error) {
+	if model == "" {
+		model = DefaultGeminiModel
+	}
 	googleClient, err := genai.NewClient(ctx, &genai.ClientConfig{
 		Project:  projectID,
 		Location: location,
@@ -73,7 +108,7 @@ func NewWithGemini(ctx context.Context, projectID, location string) (*Reviewer, 
 	exec, err := googleexecutor.New[*ReviewRequest, *ReviewResult](
 		googleClient,
 		ReviewPrompt,
-		googleexecutor.WithModel[*ReviewRequest, *ReviewResult]("gemini-2.5-flash"),
+		googleexecutor.WithModel[*ReviewRequest, *ReviewResult](model),
 		googleexecutor.WithMaxOutputTokens[*ReviewRequest, *ReviewResult](16000),
 		googleexecutor.WithTemperature[*ReviewRequest, *ReviewResult](0.1),
 		googleexecutor.WithSubmitResultProvider[*ReviewRequest, *ReviewResult](
@@ -94,6 +129,31 @@ func NewWithGemini(ctx context.Context, projectID, location string) (*Reviewer, 
 func (r *Reviewer) SetGitHub(client *ghclient.Client) {
 	r.github = client
 }
+
+// SetWorkdir attaches a working directory so bash/write_file/local read_file
+// are available to the agent. When nil, those tools return errors.
+func (r *Reviewer) SetWorkdir(w *workdir.Workdir) {
+	r.workdir = w
+}
+
+// SetSkills registers the skill catalogue surfaced via the load_skill tool.
+func (r *Reviewer) SetSkills(s []skills.Skill) {
+	r.skills = s
+}
+
+// Workdir returns the configured working directory, or nil.
+func (r *Reviewer) Workdir() *workdir.Workdir { return r.workdir }
+
+// SetConversation attaches a rendered conversation history. Empty string
+// omits the section from the prompt.
+func (r *Reviewer) SetConversation(s string) { r.conversation = s }
+
+// SetBotLogin records the authenticated GitHub login. Enables stable numbering
+// of inline review comments so users can reference them via `@bot apply N`.
+func (r *Reviewer) SetBotLogin(s string) { r.botLogin = s }
+
+// BotLogin returns the configured bot login, or "".
+func (r *Reviewer) BotLogin() string { return r.botLogin }
 
 // Review performs a code review on the specified PR.
 // Returns a ReviewOutput containing the result, commit SHA, and cached diff for posting.
@@ -126,11 +186,13 @@ func (r *Reviewer) Review(ctx context.Context, owner, repo string, prNumber int)
 
 	// Build the request
 	request := &ReviewRequest{
-		Repo:        fmt.Sprintf("%s/%s", owner, repo),
-		Title:       pr.GetTitle(),
-		Description: pr.GetBody(),
-		Files:       formatFiles(files),
-		Diff:        diff,
+		Repo:         fmt.Sprintf("%s/%s", owner, repo),
+		Title:        pr.GetTitle(),
+		Description:  pr.GetBody(),
+		Files:        formatFiles(files),
+		Diff:         diff,
+		Skills:       skills.BuildPrompt(r.skills),
+		Conversation: r.conversation,
 	}
 
 	sha := pr.GetHead().GetSHA()
@@ -139,9 +201,9 @@ func (r *Reviewer) Review(ctx context.Context, owner, repo string, prNumber int)
 	var result *ReviewResult
 	switch r.provider {
 	case "claude":
-		result, err = r.reviewWithClaude(ctx, request, owner, repo, sha)
+		result, err = r.reviewWithClaude(ctx, request, owner, repo, sha, prNumber)
 	case "gemini":
-		result, err = r.reviewWithGemini(ctx, request, owner, repo, sha)
+		result, err = r.reviewWithGemini(ctx, request, owner, repo, sha, prNumber)
 	default:
 		return nil, fmt.Errorf("unknown provider: %s", r.provider)
 	}
@@ -159,23 +221,39 @@ func (r *Reviewer) Review(ctx context.Context, owner, repo string, prNumber int)
 	}, nil
 }
 
-func (r *Reviewer) reviewWithClaude(ctx context.Context, request *ReviewRequest, owner, repo, sha string) (*ReviewResult, error) {
-	tools := map[string]claudeexecutor.ToolMetadata[*ReviewResult]{
-		"read_file": r.claudeReadFileTool(owner, repo, sha),
+func (r *Reviewer) reviewWithClaude(ctx context.Context, request *ReviewRequest, owner, repo, sha string, prNumber int) (*ReviewResult, error) {
+	tools := map[string]claudetool.Metadata[*ReviewResult]{
+		"read_file":  r.claudeReadFileTool(owner, repo, sha),
+		"load_skill": r.claudeLoadSkillTool(),
+	}
+	if r.workdir != nil {
+		tools["bash"] = r.claudeBashTool()
+		tools["write_file"] = r.claudeWriteFileTool()
+	}
+	if r.github != nil {
+		tools["reply"] = r.claudeReplyTool(owner, repo, prNumber)
 	}
 	return r.claudeExec.Execute(ctx, request, tools)
 }
 
-func (r *Reviewer) reviewWithGemini(ctx context.Context, request *ReviewRequest, owner, repo, sha string) (*ReviewResult, error) {
-	tools := map[string]googleexecutor.ToolMetadata[*ReviewResult]{
-		"read_file": r.geminiReadFileTool(owner, repo, sha),
+func (r *Reviewer) reviewWithGemini(ctx context.Context, request *ReviewRequest, owner, repo, sha string, prNumber int) (*ReviewResult, error) {
+	tools := map[string]googletool.Metadata[*ReviewResult]{
+		"read_file":  r.geminiReadFileTool(owner, repo, sha),
+		"load_skill": r.geminiLoadSkillTool(),
+	}
+	if r.workdir != nil {
+		tools["bash"] = r.geminiBashTool()
+		tools["write_file"] = r.geminiWriteFileTool()
+	}
+	if r.github != nil {
+		tools["reply"] = r.geminiReplyTool(owner, repo, prNumber)
 	}
 	return r.googleExec.Execute(ctx, request, tools)
 }
 
 // claudeReadFileTool creates a Claude tool for reading file contents.
-func (r *Reviewer) claudeReadFileTool(owner, repo, sha string) claudeexecutor.ToolMetadata[*ReviewResult] {
-	return claudeexecutor.ToolMetadata[*ReviewResult]{
+func (r *Reviewer) claudeReadFileTool(owner, repo, sha string) claudetool.Metadata[*ReviewResult] {
+	return claudetool.Metadata[*ReviewResult]{
 		Definition: anthropic.ToolParam{
 			Name:        "read_file",
 			Description: anthropic.String("Read the full content of a file in the PR for additional context"),
@@ -191,7 +269,7 @@ func (r *Reviewer) claudeReadFileTool(owner, repo, sha string) claudeexecutor.To
 			},
 		},
 		Handler: func(ctx context.Context, toolUse anthropic.ToolUseBlock,
-			trace *evals.Trace[*ReviewResult], result **ReviewResult) map[string]any {
+			trace *agenttrace.Trace[*ReviewResult], result **ReviewResult) map[string]any {
 
 			params, errResp := claudetool.NewParams(toolUse)
 			if errResp != nil {
@@ -217,8 +295,8 @@ func (r *Reviewer) claudeReadFileTool(owner, repo, sha string) claudeexecutor.To
 }
 
 // geminiReadFileTool creates a Gemini tool for reading file contents.
-func (r *Reviewer) geminiReadFileTool(owner, repo, sha string) googleexecutor.ToolMetadata[*ReviewResult] {
-	return googleexecutor.ToolMetadata[*ReviewResult]{
+func (r *Reviewer) geminiReadFileTool(owner, repo, sha string) googletool.Metadata[*ReviewResult] {
+	return googletool.Metadata[*ReviewResult]{
 		Definition: &genai.FunctionDeclaration{
 			Name:        "read_file",
 			Description: "Read the full content of a file in the PR for additional context",
@@ -234,7 +312,7 @@ func (r *Reviewer) geminiReadFileTool(owner, repo, sha string) googleexecutor.To
 			},
 		},
 		Handler: func(ctx context.Context, call *genai.FunctionCall,
-			trace *evals.Trace[*ReviewResult], result **ReviewResult) *genai.FunctionResponse {
+			trace *agenttrace.Trace[*ReviewResult], result **ReviewResult) *genai.FunctionResponse {
 
 			path, errResp := googletool.Param[string](call, "path")
 			if errResp != nil {
@@ -272,14 +350,36 @@ func (r *Reviewer) PostReview(ctx context.Context, owner, repo string, prNumber 
 
 	result := output.Result
 
+	// Determine the numbering offset so new inline comments continue from
+	// where prior bot comments left off. Allows users to reference them via
+	// `@bot apply N`.
+	numberOffset := 0
+	if r.botLogin != "" {
+		if existing, err := r.github.ListPullRequestReviewComments(ctx, owner, repo, prNumber); err == nil {
+			for _, c := range existing {
+				if strings.EqualFold(c.GetUser().GetLogin(), r.botLogin) {
+					numberOffset++
+				}
+			}
+		} else {
+			log.Warn("count prior bot review comments failed", "err", err)
+		}
+	}
+
 	// Build inline comments for suggestions with valid line numbers
 	var comments []*gh.DraftReviewComment
 	var unresolvedSuggestions []CodeSuggestion
+	nextIdx := numberOffset + 1
 
 	for _, s := range result.Suggestions {
 		// Check if the line is in the diff
 		if diffInfo.contains(s.File, s.LineEnd) {
-			comment := buildReviewComment(s, diffInfo)
+			idx := 0
+			if r.botLogin != "" {
+				idx = nextIdx
+				nextIdx++
+			}
+			comment := buildReviewComment(s, diffInfo, idx)
 			comments = append(comments, comment)
 		} else {
 			unresolvedSuggestions = append(unresolvedSuggestions, s)
@@ -294,11 +394,11 @@ func (r *Reviewer) PostReview(ctx context.Context, owner, repo string, prNumber 
 	if len(unresolvedSuggestions) > 0 {
 		body.WriteString("\n\n---\n\n## Additional Suggestions (outside diff context)\n\n")
 		for i, s := range unresolvedSuggestions {
-			body.WriteString(fmt.Sprintf("### %d. `%s` (lines %d-%d) - %s\n\n",
-				i+1, s.File, s.LineStart, s.LineEnd, s.NormalizedSeverity()))
+			fmt.Fprintf(&body, "### %d. `%s` (lines %d-%d) - %s\n\n",
+				i+1, s.File, s.LineStart, s.LineEnd, s.NormalizedSeverity())
 			body.WriteString(s.Message)
 			if s.Suggestion != "" {
-				body.WriteString(fmt.Sprintf("\n\n```suggestion\n%s\n```", s.Suggestion))
+				fmt.Fprintf(&body, "\n\n```suggestion\n%s\n```", s.Suggestion)
 			}
 			body.WriteString("\n\n")
 		}
@@ -380,8 +480,14 @@ func extractCodeFromSuggestion(suggestion string) string {
 }
 
 // buildReviewComment creates a GitHub review comment from a suggestion.
-func buildReviewComment(s CodeSuggestion, diffInfo *diffLines) *gh.DraftReviewComment {
-	body := fmt.Sprintf("**%s**: %s", s.NormalizedSeverity(), s.Message)
+// index is the global 1-based number surfaced to users as "[#N]" so they can
+// reference the suggestion via `@bot apply N`. Pass 0 to omit the marker.
+func buildReviewComment(s CodeSuggestion, diffInfo *diffLines, index int) *gh.DraftReviewComment {
+	prefix := ""
+	if index > 0 {
+		prefix = fmt.Sprintf("[#%d] ", index)
+	}
+	body := fmt.Sprintf("%s**%s**: %s", prefix, s.NormalizedSeverity(), s.Message)
 	if s.Suggestion != "" {
 		// Extract raw code from suggestion (in case AI returned markdown)
 		code := extractCodeFromSuggestion(s.Suggestion)
@@ -529,7 +635,7 @@ func formatFiles(files []*gh.CommitFile) string {
 		additions := f.GetAdditions()
 		deletions := f.GetDeletions()
 
-		sb.WriteString(fmt.Sprintf("- %s (%s, +%d/-%d)\n", filename, status, additions, deletions))
+		fmt.Fprintf(&sb, "- %s (%s, +%d/-%d)\n", filename, status, additions, deletions)
 	}
 	return sb.String()
 }

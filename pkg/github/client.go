@@ -22,6 +22,11 @@ type PRClient interface {
 	GetPRFiles(ctx context.Context, owner, repo string, number int) ([]*github.CommitFile, error)
 	GetFileContent(ctx context.Context, owner, repo, path, ref string) (string, error)
 	CreateReview(ctx context.Context, owner, repo string, number int, review *github.PullRequestReviewRequest) (*github.PullRequestReview, error)
+	CreateIssueComment(ctx context.Context, owner, repo string, number int, body string) error
+	ListIssueComments(ctx context.Context, owner, repo string, number int) ([]*github.IssueComment, error)
+	AddIssueCommentReaction(ctx context.Context, owner, repo string, commentID int64, reaction string) error
+	ListPullRequestReviewComments(ctx context.Context, owner, repo string, number int) ([]*github.PullRequestComment, error)
+	GetAuthenticatedLogin(ctx context.Context) (string, error)
 }
 
 // Ensure Client implements PRClient.
@@ -113,6 +118,83 @@ func (c *Client) CreateReview(ctx context.Context, owner, repo string, number in
 		return nil, fmt.Errorf("create review: %w", err)
 	}
 	return created, nil
+}
+
+// CreateIssueComment posts a top-level comment on the PR (via the issues API).
+// Used by the reply tool for progressive updates.
+func (c *Client) CreateIssueComment(ctx context.Context, owner, repo string, number int, body string) error {
+	_, _, err := c.gh.Issues.CreateComment(ctx, owner, repo, number, &github.IssueComment{
+		Body: Ptr(body),
+	})
+	if err != nil {
+		return fmt.Errorf("create issue comment: %w", err)
+	}
+	return nil
+}
+
+// ListIssueComments returns every top-level comment on the PR.
+// Used when a webhook triggers a review so the agent can see prior context.
+func (c *Client) ListIssueComments(ctx context.Context, owner, repo string, number int) ([]*github.IssueComment, error) {
+	opts := &github.IssueListCommentsOptions{
+		ListOptions: github.ListOptions{PerPage: 100},
+	}
+	var all []*github.IssueComment
+	for {
+		page, resp, err := c.gh.Issues.ListComments(ctx, owner, repo, number, opts)
+		if err != nil {
+			return nil, fmt.Errorf("list issue comments: %w", err)
+		}
+		all = append(all, page...)
+		if resp.NextPage == 0 {
+			break
+		}
+		opts.Page = resp.NextPage
+	}
+	return all, nil
+}
+
+// ListPullRequestReviewComments returns every inline review comment on the PR
+// across all reviews. Used by the apply-suggestions flow to locate the bot's
+// prior suggestions by their creation order.
+func (c *Client) ListPullRequestReviewComments(ctx context.Context, owner, repo string, number int) ([]*github.PullRequestComment, error) {
+	opts := &github.PullRequestListCommentsOptions{
+		Sort:        "created",
+		Direction:   "asc",
+		ListOptions: github.ListOptions{PerPage: 100},
+	}
+	var all []*github.PullRequestComment
+	for {
+		page, resp, err := c.gh.PullRequests.ListComments(ctx, owner, repo, number, opts)
+		if err != nil {
+			return nil, fmt.Errorf("list PR review comments: %w", err)
+		}
+		all = append(all, page...)
+		if resp.NextPage == 0 {
+			break
+		}
+		opts.Page = resp.NextPage
+	}
+	return all, nil
+}
+
+// AddIssueCommentReaction reacts to an issue/PR comment. reaction is one of
+// "+1", "-1", "heart", "eyes", "confused", etc.
+func (c *Client) AddIssueCommentReaction(ctx context.Context, owner, repo string, commentID int64, reaction string) error {
+	_, _, err := c.gh.Reactions.CreateIssueCommentReaction(ctx, owner, repo, commentID, reaction)
+	if err != nil {
+		return fmt.Errorf("add reaction: %w", err)
+	}
+	return nil
+}
+
+// GetAuthenticatedLogin returns the login of the user the token authenticates
+// as. Used for numbering and filtering bot-authored review comments.
+func (c *Client) GetAuthenticatedLogin(ctx context.Context) (string, error) {
+	user, _, err := c.gh.Users.Get(ctx, "")
+	if err != nil {
+		return "", fmt.Errorf("get authenticated user: %w", err)
+	}
+	return user.GetLogin(), nil
 }
 
 // Ptr is a helper to get a pointer to a value.
