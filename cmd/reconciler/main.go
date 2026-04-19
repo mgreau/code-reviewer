@@ -45,7 +45,7 @@ type config struct {
 	JudgeMinScore float64 `env:"JUDGE_MIN_SCORE,default=0.5"`
 
 	ProjectID   string `env:"GOOGLE_CLOUD_PROJECT,required"`
-	Location    string `env:"GOOGLE_CLOUD_LOCATION,default=us-east5"`
+	Location    string `env:"GOOGLE_CLOUD_LOCATION,default=global"`
 	GitHubToken string `env:"GITHUB_TOKEN,required"`
 }
 

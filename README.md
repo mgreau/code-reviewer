@@ -229,7 +229,7 @@ gcloud auth application-default login
 Optional:
 
 ```bash
-export GOOGLE_CLOUD_LOCATION=us-east5             # default; Claude-supporting region
+export GOOGLE_CLOUD_LOCATION=global               # default; Vertex global endpoint (works for Claude + Gemini). Set to a region (e.g. us-east5) to pin.
 export GITHUB_WEBHOOK_SECRET=...                  # serve mode only; verifies X-Hub-Signature-256
 ```
 

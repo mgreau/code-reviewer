@@ -54,7 +54,7 @@ func runReview() {
 	}
 	location := os.Getenv("GOOGLE_CLOUD_LOCATION")
 	if location == "" {
-		location = "us-east5"
+		location = "global"
 	}
 
 	// Check for GitHub token

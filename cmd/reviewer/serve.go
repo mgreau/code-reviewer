@@ -50,7 +50,7 @@ func runServe() {
 	}
 	location := os.Getenv("GOOGLE_CLOUD_LOCATION")
 	if location == "" {
-		location = "us-east5"
+		location = "global"
 	}
 	githubToken := os.Getenv("GITHUB_TOKEN")
 	if githubToken == "" {

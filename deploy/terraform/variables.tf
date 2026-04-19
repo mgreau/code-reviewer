@@ -11,8 +11,8 @@ variable "name" {
 
 variable "regions" {
   type        = list(string)
-  description = "Regions to deploy to. Use Claude-supporting regions (us-east5 is the default Vertex region for Claude)."
-  default     = ["us-east5"]
+  description = "Regions to deploy Cloud Run services to. Any Cloud Run region works — Vertex is addressed separately via vertex_location."
+  default     = ["us-central1"]
 }
 
 variable "secret_version_adder" {
@@ -27,8 +27,8 @@ variable "github_token_secret_id" {
 
 variable "vertex_location" {
   type        = string
-  description = "Vertex AI region, passed to the reconciler as GOOGLE_CLOUD_LOCATION."
-  default     = "us-east5"
+  description = "Vertex AI location, passed to the reconciler as GOOGLE_CLOUD_LOCATION. Use `global` to hit the multi-region Vertex endpoint (supports Claude; decouples Cloud Run placement from model availability), or a regional name (e.g. `us-east5`) to pin."
+  default     = "global"
 }
 
 variable "provider" {
