@@ -1,8 +1,12 @@
 # Code Reviewer
 
-A Go service that reviews GitHub Pull Requests with Claude or Gemini. Runs either as a one-shot CLI (`reviewer review ...`) or as an on-demand webhook server that reacts to PR @mentions (`reviewer serve ...`). Built on the [driftlessaf](https://github.com/driftlessaf/go-driftlessaf) agent framework.
+A Go service that reviews GitHub Pull Requests with Claude or Gemini. Ships in **three architectures**, all sharing the same review core:
 
-It mirrors the capabilities of [vercel-labs/openreview](https://github.com/vercel-labs/openreview) — progressive skills, full-repo tool access via a local workdir, mention-triggered reviews, reply comments — while staying a standalone Go binary with no Vercel/Next.js dependencies.
+1. **One-shot CLI** (`reviewer review`) — for manual runs and CI jobs.
+2. **Webhook server** (`reviewer serve`) — long-running HTTP process for local dev and small teams.
+3. **Cloud Run reconciler** (`cmd/reconciler` + `deploy/terraform`) — workqueue-backed service for team- and org-scale production.
+
+Built on the [driftlessaf](https://github.com/driftlessaf/go-driftlessaf) agent framework. Mirrors the capabilities of [vercel-labs/openreview](https://github.com/vercel-labs/openreview) — progressive skills, full-repo tool access via a local workdir, mention-triggered reviews, reply comments — while staying a standalone Go binary with no Vercel/Next.js dependencies.
 
 ## Contents
 
@@ -13,17 +17,17 @@ It mirrors the capabilities of [vercel-labs/openreview](https://github.com/verce
 - [Environment](#environment)
 - [`reviewer review` (one-shot CLI)](#reviewer-review-one-shot-cli)
 - [`reviewer serve` (webhook server)](#reviewer-serve-webhook-server)
+- [Cloud Run reconciler (production)](#cloud-run-reconciler-production)
 - [Skills](#skills)
 - [Workdir, Tools, and `-apply`](#workdir-tools-and--apply)
 - [AI Judge](#ai-judge)
 - [Feature Parity with openreview](#feature-parity-with-openreview)
 - [Architecture](#architecture)
-- [Deployment (Cloud Run reconciler)](#deployment-cloud-run-reconciler)
 - [Development](#development)
 
 ## Features
 
-- Two operating modes: one-shot `review` or long-running `serve` webhook.
+- Three operating modes sharing one review engine: one-shot `review`, long-running `serve` webhook, and a workqueue-backed Cloud Run reconciler for production.
 - Claude and Gemini backends, both via Google Cloud Vertex AI (single auth path).
 - Structured review output: summary, inline suggestions, approval flag.
 - Optional local workdir (reuse an existing checkout or shallow-clone the PR branch) for full-repo code access.
@@ -36,14 +40,113 @@ It mirrors the capabilities of [vercel-labs/openreview](https://github.com/verce
 
 ## Operating Modes
 
-| Mode | Command | Intended use |
-|---|---|---|
-| One-shot CLI | `reviewer review ...` | Manual runs, scripts, CI jobs |
-| Webhook server | `reviewer serve ...` | Long-running service behind a GitHub webhook; responds to `@bot` mentions on PRs |
+All three modes invoke the same review engine (`pkg/reviewer` — `RunReview` / `Review` / `PostReview`). What differs is how a review is **triggered**, how it's **hosted**, and what happens when **multiple comments arrive at once**.
+
+### 1. One-shot CLI — `reviewer review`
+
+```
+  You / CI
+     │
+     │  reviewer review -owner=X -repo=Y -pr=N
+     ▼
+  ┌───────────────────────────────────────┐
+  │  reviewer (one-shot process)          │
+  │                                        │
+  │  fetch PR                              │
+  │  (optional) clone workdir              │
+  │  run review via Vertex AI              │
+  │  (optional) judge low-quality filter   │
+  │  (optional) apply: commit + push       │
+  │  post review  ───────────────────────┐ │
+  │                                      │ │
+  │  process exits when done             │ │
+  └──────────────────────────────────────┼─┘
+                                         ▼
+                                     GitHub API
+```
+
+No hosting, no webhook, no queue. You run it — it runs — it exits. Ideal for **manual reviews** and **CI jobs that want a review on every PR** without waiting for a human to mention the bot.
+
+### 2. Webhook server — `reviewer serve`
+
+```
+     GitHub webhook
+        │  POST /webhook + HMAC signature
+        ▼
+  ┌──────────────────────────────────────────┐
+  │  reviewer serve  (long-lived HTTP proc)  │
+  │                                           │
+  │    HMAC verify ─▶ parse @bot command     │
+  │                          │                │
+  │                          ▼                │
+  │   ◄── 202 Accepted ── goroutine           │
+  │                          │                │
+  │                          ▼                │
+  │                  RunReview / Apply / Skip │
+  └──────────────────────────┼────────────────┘
+                             ▼
+                         GitHub API  (post review / reply / push)
+
+  no queue · no dedupe · no retry budget · no DLQ
+  one process · scales vertically only
+  supports review, apply, skip, rereview verbs
+```
+
+Single binary, single process. Put it behind [smee.io](https://smee.io/), [ngrok](https://ngrok.com/), or a reverse proxy and it responds to `@bot` mentions in real time. **Best for local development** (iterate on prompts and skills against a test repo) and **small teams** where a dropped webhook occasionally is tolerable.
+
+### 3. Cloud Run reconciler — `cmd/reconciler` + `deploy/terraform`
+
+```
+                         ┌─ Cloud Run ────┐
+     GitHub ──POST─────▶ │ github-events  │
+     webhook             │ (HMAC verify,  │
+                         │  public URL)   │
+                         └────────┬───────┘
+                                  │  CloudEvent
+                                  ▼
+                            Pub/Sub broker
+                                  │
+                                  ▼
+                         ┌─ Cloud Run ────┐
+                         │ bridge         │  key = pullrequesturl
+                         │ (workqueue     │
+                         │  dispatcher)   │
+                         └────────┬───────┘
+                                  │  dedupe · retry · DLQ
+                                  ▼
+                         ┌─ Cloud Run ────┐
+                         │ reconciler     │─▶ RunReview ─▶ GitHub API
+                         │ (cmd/          │
+                         │  reconciler)   │
+                         └────────────────┘
+
+  keyed by PR URL — a burst of @bot comments collapses to one review
+  5 Terraform modules + ko build (no Dockerfile, no DNS, no load balancer)
+  review verb only today (apply/skip = follow-up)
+```
+
+Purpose-built for **team- and org-scale**: a burst of `@bot` comments on the same PR dedupes to one work item, transient failures retry with backoff, exhausted keys land in a DLQ for inspection, and the reconciler scales horizontally via the workqueue dispatcher.
+
+### Picking a mode
+
+|  | `reviewer review` | `reviewer serve` | Cloud Run reconciler |
+|---|---|---|---|
+| **Shape** | One-shot CLI | HTTP webhook server | Workqueue-driven service |
+| **Primary use case** | Manual runs, CI jobs | Local dev, small teams | Team / org production |
+| **Trigger** | CLI invocation | GitHub `issue_comment` webhook | GitHub `issue_comment` webhook |
+| **Hosting** | None — you run it | Single binary on a VM / container | Cloud Run on GCP |
+| **Deploy** | `go install` | `go install` + reverse proxy or tunnel | `terraform apply` (one command) |
+| **Dedupe by PR** | N/A | ❌ | ✅ |
+| **Retry on failure** | N/A | ❌ | ✅ backoff + DLQ |
+| **Horizontal scaling** | N/A | ❌ | ✅ dispatcher replicas |
+| **Verbs supported** | `review` only | `review`, `apply`, `skip`, `rereview` | `review` (others = follow-up) |
+| **GCP footprint** | none | none | Cloud Run, Pub/Sub, Secret Manager, GCS, Artifact Registry, Vertex AI |
 
 The legacy flat-flag shape (`reviewer -owner=... -repo=... -pr=...`) still works and is routed to `review`.
 
 ## How It Works
+
+The diagram below is the **review flow shared by all three modes**. What differs is only the trigger box at the top (CLI invocation vs webhook → goroutine vs webhook → workqueue → reconciler); everything from step 2 down is the same code path through `pkg/reviewer`.
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
@@ -51,6 +154,7 @@ The legacy flat-flag shape (`reviewer -owner=... -repo=... -pr=...`) still works
 │                                                                              │
 │   reviewer review  -owner=... -repo=... -pr=...    (one-shot CLI)           │
 │   reviewer serve   -bot-login=openreview ...       (webhook server)         │
+│   cmd/reconciler                                   (Cloud Run reconciler)   │
 └─────────────────────────────────────────────────────────────────────────────┘
                                    │
                                    ▼
@@ -59,6 +163,7 @@ The legacy flat-flag shape (`reviewer -owner=... -repo=... -pr=...`) still works
 │                                                                              │
 │   CLI: flags → fetch PR                                                      │
 │   Webhook: HMAC-verify → parse issue_comment → match @mention → ack 👀      │
+│   Reconciler: workqueue key=PR URL → RunReview(owner, repo, pr)              │
 │                                                                              │
 │   Optional: shallow-clone PR branch into a workdir                           │
 │             discover .agents/skills/*/SKILL.md                               │
@@ -251,6 +356,34 @@ Rules:
 3. Events: **Issue comments** (and **Pings** for testing). That's it — PR comments are delivered as `issue_comment` events.
 4. `GITHUB_TOKEN` needs `contents:write` (for clone + push with `-apply`), `pull_requests:write` (reviews, reply), and `issues:write` (fallback comments, reactions). A fine-grained PAT or App installation token both work.
 
+## Cloud Run reconciler (production)
+
+The reconciler is `serve`'s grown-up sibling — same review engine, but the webhook-to-work plumbing is replaced with a workqueue so bursts dedupe and failures retry. It's the right choice when you're running the bot across multiple repos or teams and can't afford to miss events.
+
+### Shape
+
+```
+GitHub ─webhook─▶ github-events  ──▶ broker ──▶ workqueue ──▶ reconciler ──▶ GitHub
+                 (Cloud Run)         (Pub/Sub)   (GCS+PubSub)  (cmd/reconciler)
+```
+
+- `github-events` (Chainguard's module) handles HMAC verification and emits a CloudEvent per GitHub webhook.
+- The broker → workqueue bridge subscribes to `dev.chainguard.github.issue_comment` and uses the `pullrequesturl` CloudEvent extension as the workqueue **key**.
+- The workqueue dedupes by key, retries on error with exponential backoff, and dead-letters after `max_retry` (default 5).
+- Our code (`cmd/reconciler/main.go`) is a ~150-line gRPC `WorkqueueService.Process(key)` handler — it parses the PR URL, calls `RunReview`, and lets the workqueue manage retries.
+
+### Deploying
+
+One-line summary: edit a variable, `terraform apply`, populate two secrets, add a GitHub webhook. Full walkthrough lives in [`deploy/terraform/README.md`](deploy/terraform/README.md) — it covers enabling APIs, creating the bot token secret, running apply (~10 min first time, mostly `ko` building the image), populating the HMAC secret, wiring the webhook, and a smoke test.
+
+For a guided deploy, ask Claude Code "deploy code-reviewer" to invoke the [`code-reviewer-deploy`](~/.claude/skills/code-reviewer-deploy/SKILL.md) skill, which walks through each step with troubleshooting for the common failures.
+
+### What's intentionally out
+
+- **DNS + managed certs.** Uses the raw `.run.app` URL. Upgrade to `serverless-gclb` + a domain when you need a stable webhook URL behind your own hostname.
+- **GitHub App auth.** Uses a PAT via Secret Manager. A GitHub App would rotate keys and scope per-install; add that when the reviewer is multi-tenant.
+- **`apply` / `skip` verbs.** The reconciler only runs reviews today. If you need apply/skip in the deployed service, run `reviewer serve` alongside (or in front of) the reconciler — it's the tracked follow-up.
+
 ## Skills
 
 Skills are progressive, on-demand context snippets the agent loads only when a task calls for them. Exactly the same layout openreview uses:
@@ -374,20 +507,7 @@ code-reviewer/
 | `agents/agenttrace` | Tool-call trace types |
 | `agents/judge` | Suggestion quality evaluator |
 
-## Deployment (Cloud Run reconciler)
-
-For a production-style deployment on GCP, the repo ships a workqueue-backed reconciler that replaces `serve` mode. Shape:
-
-```
-GitHub ─webhook─▶ github-events  ──▶ broker ──▶ workqueue ──▶ reconciler ──▶ GitHub
-                 (Cloud Run)         (Pub/Sub)   (GCS+PubSub)  (cmd/reconciler)
-```
-
-The reconciler dedupes by PR URL — a burst of `@bot` comments on one PR collapses into a single review. No Dockerfile, no DNS, no load balancer; `ko` builds the image and Cloud Run hands back a `.run.app` URL that GitHub posts to directly.
-
-- **Quick start**: [`deploy/terraform/README.md`](deploy/terraform/README.md) — enable APIs, create the token secret, `terraform apply`, wire the webhook.
-- **Guided walkthrough**: ask Claude Code "deploy code-reviewer" to invoke the [`code-reviewer-deploy`](~/.claude/skills/code-reviewer-deploy/SKILL.md) skill, which progressively walks through bootstrap → secrets → apply → webhook → smoke test with troubleshooting for each step.
-- **Scope**: the reconciler currently handles the `review` verb only. `apply` and `skip` still live in `reviewer serve` — run serve locally (or deploy it separately) if you need those verbs.
+The reconciler is layered on top: `cmd/reconciler/main.go` registers a gRPC `WorkqueueService` that calls into `pkg/reviewer/runner.go` (shared with `serve`), and the Terraform stack in `deploy/terraform/` wires `github-events` + broker + `regional-go-reconciler` + `cloudevents-workqueue` to it.
 
 ## Development
 
